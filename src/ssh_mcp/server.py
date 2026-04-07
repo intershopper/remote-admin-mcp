@@ -57,7 +57,8 @@ async def list_tools() -> list[Tool]:
                     "command": {"type": "string", "description": "Single command to execute"},
                     "script": {"type": "string", "description": "Multi-line bash script (alternative to command)"},
                     "use_sudo": {"type": "boolean", "description": "Use sudo", "default": False},
-                    "timeout": {"type": "integer", "description": "Timeout in seconds (default: 30, max: 300)", "default": 30}
+                    "timeout": {"type": "integer", "description": "Timeout in seconds (default: 30, max: 300)", "default": 30},
+                    "reason": {"type": "string", "description": "Human-readable explanation of what this command does and why (for audit log)"}
                 },
                 "required": ["server"]
             }
@@ -85,7 +86,8 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "server": {"type": "string", "description": "Server name"},
                     "path": {"type": "string", "description": "File path"},
-                    "content": {"type": "string", "description": "File content"}
+                    "content": {"type": "string", "description": "File content"},
+                    "reason": {"type": "string", "description": "Human-readable explanation of what is being written and why (for audit log)"}
                 },
                 "required": ["server", "path", "content"]
             }
@@ -99,7 +101,8 @@ async def list_tools() -> list[Tool]:
                     "server": {"type": "string", "description": "Server name"},
                     "direction": {"type": "string", "enum": ["upload", "download"], "description": "Transfer direction"},
                     "local_path": {"type": "string", "description": "Local file path"},
-                    "remote_path": {"type": "string", "description": "Remote file path"}
+                    "remote_path": {"type": "string", "description": "Remote file path"},
+                    "reason": {"type": "string", "description": "Human-readable explanation of what is being transferred and why (for audit log)"}
                 },
                 "required": ["server", "direction", "local_path", "remote_path"]
             }
@@ -112,7 +115,8 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "server": {"type": "string", "description": "Server name"},
                     "service": {"type": "string", "description": "Service name"},
-                    "action": {"type": "string", "enum": ["status", "start", "stop", "restart", "reload"], "description": "Action to perform"}
+                    "action": {"type": "string", "enum": ["status", "start", "stop", "restart", "reload"], "description": "Action to perform"},
+                    "reason": {"type": "string", "description": "Human-readable explanation of why this service action is needed (for audit log)"}
                 },
                 "required": ["server", "service", "action"]
             }
@@ -143,7 +147,8 @@ async def list_tools() -> list[Tool]:
                     "old_text": {"type": "string", "description": "Exact text to find (multi-line supported)"},
                     "new_text": {"type": "string", "description": "Replacement text"},
                     "count": {"type": "integer", "description": "Max replacements (default: 1, 0 = all)", "default": 1},
-                    "dry_run": {"type": "boolean", "description": "Preview changes without applying", "default": False}
+                    "dry_run": {"type": "boolean", "description": "Preview changes without applying", "default": False},
+                    "reason": {"type": "string", "description": "Human-readable explanation of what is being changed and why (for audit log)"}
                 },
                 "required": ["server", "path", "old_text", "new_text"]
             }
@@ -187,7 +192,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             ssh_client.write_file(srv, tmp, f"#!/bin/bash\n{script}\n")
             try:
                 result = ssh_client.execute(srv, f"bash {tmp}", use_sudo, timeout)
-                audit.log(srv, "execute", f"script ({len(script)} chars)")
+                audit.log(srv, "execute", f"script ({len(script)} chars)", arguments.get("reason", ""))
                 return [TextContent(type="text", text=_format_result(result, srv, "execute_script"))]
             except TimeoutError:
                 return [TextContent(type="text", text=f"[{srv}] execute_script\nTIMEOUT after {timeout}s")]
@@ -222,14 +227,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 elif exit_code != 0:
                     result_parts.append(f"Exit code: {exit_code}")
                 body = "\n".join(result_parts) if result_parts else "(no output)"
-                audit.log(srv, "execute", cmd)
+                audit.log(srv, "execute", cmd, arguments.get("reason", ""))
                 return [TextContent(type="text", text=f"{header}{body}")]
             except Exception:
                 pass  # Fall through to non-streaming
 
         try:
             result = ssh_client.execute(srv, cmd, use_sudo, timeout)
-            audit.log(srv, "execute", cmd)
+            audit.log(srv, "execute", cmd, arguments.get("reason", ""))
             return [TextContent(type="text", text=_format_result(result, srv, cmd))]
         except TimeoutError:
             return [TextContent(type="text", text=f"[{srv}] $ {cmd}\nTIMEOUT after {timeout}s. Retry with higher timeout (max 300s).")]
@@ -245,7 +250,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     elif name == "write_file":
         ssh_client.write_file(arguments["server"], arguments["path"], arguments["content"])
-        audit.log(arguments["server"], "write_file", arguments["path"])
+        audit.log(arguments["server"], "write_file", arguments["path"], arguments.get("reason", ""))
         return [TextContent(type="text", text=f"[{arguments['server']}] Written: {arguments['path']}")]
 
     elif name == "transfer_file":
@@ -255,7 +260,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         remote_path = arguments["remote_path"]
         if direction == "upload":
             ssh_client.upload_file(srv, local_path, remote_path)
-            audit.log(srv, "transfer_file", f"upload {local_path} → {remote_path}")
+            audit.log(srv, "transfer_file", f"upload {local_path} → {remote_path}", arguments.get("reason", ""))
             return [TextContent(type="text", text=f"[{srv}] Uploaded: {local_path} → {remote_path}")]
         else:
             ssh_client.download_file(srv, remote_path, local_path)
@@ -268,7 +273,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         use_sudo = action != "status"
         result = ssh_client.execute(srv, f"systemctl {action} {svc}", use_sudo=use_sudo)
         if action != "status" and result.exit_code == 0:
-            audit.log(srv, "service", f"{action} {svc}")
+            audit.log(srv, "service", f"{action} {svc}", arguments.get("reason", ""))
             return [TextContent(type="text", text=f"[{srv}] {svc} → {action} OK")]
         return [TextContent(type="text", text=_format_result(result, srv, f"systemctl {action} {svc}"))]
 
@@ -291,7 +296,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         result = ssh_client.replace_in_file(srv, path, old_text, new_text, count, dry_run)
         action = "Preview" if dry_run else "Replaced"
         if not dry_run:
-            audit.log(srv, "replace_in_file", path)
+            audit.log(srv, "replace_in_file", path, arguments.get("reason", ""))
         return [TextContent(type="text", text=f"[{srv}] {action} in {path}\n{result}")]
 
     elif name == "get_file_structure":
