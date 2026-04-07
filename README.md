@@ -151,4 +151,4 @@ ruff check src/
 
 ## Lizenz
 
-MIT
+DB Inner Source License (DBISL) — siehe [LICENSE.adoc](LICENSE.adoc)
