@@ -1,0 +1,14 @@
+version: v3
+license: LicenseRef-DBISL
+contacts:
+  - frank.schaellert@deutschebahn.com
+confidentiality: internal
+reference-ids: [A-102107]
+protected-branches:
+  - main
+usage-scenario:
+  - internal-service
+custom:
+  integrity: normal
+  availability: normal
+  confidentiality: normal
