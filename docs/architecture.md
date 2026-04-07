@@ -116,14 +116,17 @@ graph TB
     subgraph ssh-mcp-server
         SRV[server.py<br/>MCP Tool Registration]
         SSH[ssh_client.py<br/>SSH/SFTP Operations]
+        AUD[audit.py<br/>Audit Logging]
         CFG[config.py<br/>Server Loading]
         MDL[models.py<br/>Data Classes]
     end
 
     SRV --> SSH
+    SRV --> AUD
     SRV --> CFG
     SSH --> MDL
     CFG --> MDL
+    AUD --> |~/.ssh-mcp-audit.log| LOG[(Logfile)]
 ```
 
 ### Ebene 2 — Moduldetails
@@ -239,6 +242,7 @@ graph TB
 ### Sicherheit
 - **Approval-Workflow**: Schreibende Tools (`execute`, `write_file`, `replace_in_file`, `service`, `transfer_file`) erfordern User-Bestätigung durch den MCP Client
 - **Auto-Approve nur für Lese-Tools**: `list_servers`, `read_file`, `search_in_file`, `get_file_structure`
+- **Audit-Log**: Alle schreibenden Operationen werden in `~/.ssh-mcp-audit.log` protokolliert (Zeitstempel, Server, Tool, Detail)
 - **Credential-Management**: Server-Zugangsdaten in `.env`, nicht im Code
 - **Kein Shell-Subprocess**: paramiko nutzt direkte SSH-Kanäle
 

@@ -3,6 +3,7 @@ from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.types import Tool, TextContent
 from .config import load_servers
 from .ssh_client import SSHClient
+from . import audit
 
 server = Server("ssh-mcp-server")
 servers = load_servers()
@@ -186,6 +187,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             ssh_client.write_file(srv, tmp, f"#!/bin/bash\n{script}\n")
             try:
                 result = ssh_client.execute(srv, f"bash {tmp}", use_sudo, timeout)
+                audit.log(srv, "execute", f"script ({len(script)} chars)")
                 return [TextContent(type="text", text=_format_result(result, srv, "execute_script"))]
             except TimeoutError:
                 return [TextContent(type="text", text=f"[{srv}] execute_script\nTIMEOUT after {timeout}s")]
@@ -220,12 +222,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 elif exit_code != 0:
                     result_parts.append(f"Exit code: {exit_code}")
                 body = "\n".join(result_parts) if result_parts else "(no output)"
+                audit.log(srv, "execute", cmd)
                 return [TextContent(type="text", text=f"{header}{body}")]
             except Exception:
                 pass  # Fall through to non-streaming
 
         try:
             result = ssh_client.execute(srv, cmd, use_sudo, timeout)
+            audit.log(srv, "execute", cmd)
             return [TextContent(type="text", text=_format_result(result, srv, cmd))]
         except TimeoutError:
             return [TextContent(type="text", text=f"[{srv}] $ {cmd}\nTIMEOUT after {timeout}s. Retry with higher timeout (max 300s).")]
@@ -241,6 +245,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     elif name == "write_file":
         ssh_client.write_file(arguments["server"], arguments["path"], arguments["content"])
+        audit.log(arguments["server"], "write_file", arguments["path"])
         return [TextContent(type="text", text=f"[{arguments['server']}] Written: {arguments['path']}")]
 
     elif name == "transfer_file":
@@ -250,6 +255,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         remote_path = arguments["remote_path"]
         if direction == "upload":
             ssh_client.upload_file(srv, local_path, remote_path)
+            audit.log(srv, "transfer_file", f"upload {local_path} → {remote_path}")
             return [TextContent(type="text", text=f"[{srv}] Uploaded: {local_path} → {remote_path}")]
         else:
             ssh_client.download_file(srv, remote_path, local_path)
@@ -262,6 +268,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         use_sudo = action != "status"
         result = ssh_client.execute(srv, f"systemctl {action} {svc}", use_sudo=use_sudo)
         if action != "status" and result.exit_code == 0:
+            audit.log(srv, "service", f"{action} {svc}")
             return [TextContent(type="text", text=f"[{srv}] {svc} → {action} OK")]
         return [TextContent(type="text", text=_format_result(result, srv, f"systemctl {action} {svc}"))]
 
@@ -283,6 +290,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         dry_run = arguments.get("dry_run", False)
         result = ssh_client.replace_in_file(srv, path, old_text, new_text, count, dry_run)
         action = "Preview" if dry_run else "Replaced"
+        if not dry_run:
+            audit.log(srv, "replace_in_file", path)
         return [TextContent(type="text", text=f"[{srv}] {action} in {path}\n{result}")]
 
     elif name == "get_file_structure":
