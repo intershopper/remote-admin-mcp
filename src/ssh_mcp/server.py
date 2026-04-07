@@ -43,40 +43,27 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="list_servers",
-            description="List all available SSH servers",
+            description="List all configured SSH servers with their connection details. Call this first to discover available server names.",
             inputSchema={"type": "object", "properties": {}}
         ),
         Tool(
-            name="execute_command",
-            description="Execute a command on a remote server (requires approval)",
+            name="execute",
+            description="Execute a command or multi-line script on a remote server via SSH. For single commands use `command`, for multi-line scripts use `script`. Requires approval.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "server": {"type": "string", "description": "Server name"},
-                    "command": {"type": "string", "description": "Command to execute"},
+                    "command": {"type": "string", "description": "Single command to execute"},
+                    "script": {"type": "string", "description": "Multi-line bash script (alternative to command)"},
                     "use_sudo": {"type": "boolean", "description": "Use sudo", "default": False},
                     "timeout": {"type": "integer", "description": "Timeout in seconds (default: 30, max: 300)", "default": 30}
                 },
-                "required": ["server", "command"]
-            }
-        ),
-        Tool(
-            name="execute_script",
-            description="Execute a multi-line bash script on a remote server (requires approval)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "server": {"type": "string", "description": "Server name"},
-                    "script": {"type": "string", "description": "Bash script content (multi-line)"},
-                    "use_sudo": {"type": "boolean", "description": "Use sudo", "default": False},
-                    "timeout": {"type": "integer", "description": "Timeout in seconds (default: 60, max: 300)", "default": 60}
-                },
-                "required": ["server", "script"]
+                "required": ["server"]
             }
         ),
         Tool(
             name="read_file",
-            description="Read a file from remote server. Supports partial reads with lines/offset/tail.",
+            description="Read a file or specific line range from a remote server. For large files (>200 lines), always use lines+offset to read only the relevant section. Use tail=true to read from end (e.g. log files).",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -91,7 +78,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="write_file",
-            description="Write a text file to remote server via SFTP (requires approval)",
+            description="Overwrite an entire file on remote server via SFTP. WARNING: replaces full file content. For surgical edits on large files, use replace_in_file instead. Requires approval.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -103,56 +90,76 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
-            name="upload_file",
-            description="Upload a local file to remote server via SFTP (requires approval)",
+            name="transfer_file",
+            description="Transfer a file between local machine and remote server via SFTP. Use direction=upload to send, direction=download to receive.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "server": {"type": "string", "description": "Server name"},
+                    "direction": {"type": "string", "enum": ["upload", "download"], "description": "Transfer direction"},
                     "local_path": {"type": "string", "description": "Local file path"},
-                    "remote_path": {"type": "string", "description": "Remote destination path"}
+                    "remote_path": {"type": "string", "description": "Remote file path"}
                 },
-                "required": ["server", "local_path", "remote_path"]
+                "required": ["server", "direction", "local_path", "remote_path"]
             }
         ),
         Tool(
-            name="download_file",
-            description="Download a file from remote server to local path via SFTP",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "server": {"type": "string", "description": "Server name"},
-                    "remote_path": {"type": "string", "description": "Remote file path"},
-                    "local_path": {"type": "string", "description": "Local destination path"}
-                },
-                "required": ["server", "remote_path", "local_path"]
-            }
-        ),
-        Tool(
-            name="get_service_status",
-            description="Get systemd service status",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "server": {"type": "string", "description": "Server name"},
-                    "service": {"type": "string", "description": "Service name"}
-                },
-                "required": ["server", "service"]
-            }
-        ),
-        Tool(
-            name="manage_service",
-            description="Manage systemd service (start/stop/restart) (requires approval)",
+            name="service",
+            description="Manage or query a systemd service. Use action=status to check, or start/stop/restart/reload to control. Actions other than status require sudo.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "server": {"type": "string", "description": "Server name"},
                     "service": {"type": "string", "description": "Service name"},
-                    "action": {"type": "string", "enum": ["start", "stop", "restart", "reload"]}
+                    "action": {"type": "string", "enum": ["status", "start", "stop", "restart", "reload"], "description": "Action to perform"}
                 },
                 "required": ["server", "service", "action"]
             }
-        )
+        ),
+        Tool(
+            name="search_in_file",
+            description="Search for a text pattern in a remote file using grep. Returns matching lines with line numbers and surrounding context. Use this to locate code sections before editing.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "server": {"type": "string", "description": "Server name"},
+                    "path": {"type": "string", "description": "File path"},
+                    "pattern": {"type": "string", "description": "Grep regex pattern"},
+                    "context_lines": {"type": "integer", "description": "Lines of context around each match", "default": 3},
+                    "max_matches": {"type": "integer", "description": "Maximum number of matches", "default": 20}
+                },
+                "required": ["server", "path", "pattern"]
+            }
+        ),
+        Tool(
+            name="replace_in_file",
+            description="Replace a specific text passage in a remote file without loading the full content. Preferred over write_file for editing large files. Returns error if old_text not found. Supports dry_run preview.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "server": {"type": "string", "description": "Server name"},
+                    "path": {"type": "string", "description": "File path"},
+                    "old_text": {"type": "string", "description": "Exact text to find (multi-line supported)"},
+                    "new_text": {"type": "string", "description": "Replacement text"},
+                    "count": {"type": "integer", "description": "Max replacements (default: 1, 0 = all)", "default": 1},
+                    "dry_run": {"type": "boolean", "description": "Preview changes without applying", "default": False}
+                },
+                "required": ["server", "path", "old_text", "new_text"]
+            }
+        ),
+        Tool(
+            name="get_file_structure",
+            description="Get an overview of functions, classes and key definitions in a source file. Returns symbol names with line numbers. Use this to understand a large file before reading or editing specific sections.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "server": {"type": "string", "description": "Server name"},
+                    "path": {"type": "string", "description": "File path"},
+                    "language": {"type": "string", "description": "Language hint (auto-detected from extension if omitted)"}
+                },
+                "required": ["server", "path"]
+            }
+        ),
     ]
 
 
@@ -162,18 +169,38 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         server_list = "\n".join(f"  {n}  {cfg.user}@{cfg.host}:{cfg.port}" for n, cfg in servers.items())
         return [TextContent(type="text", text=server_list)]
 
-    elif name == "execute_command":
-        cmd = arguments["command"]
+    elif name == "execute":
+        srv = arguments["server"]
+        command = arguments.get("command")
+        script = arguments.get("script")
         use_sudo = arguments.get("use_sudo", False)
         timeout = min(arguments.get("timeout", 30), 300)
 
+        if not command and not script:
+            return [TextContent(type="text", text="ERROR: Provide either 'command' or 'script'")]
+
+        # Script mode: write to temp file, execute, clean up
+        if script:
+            import hashlib
+            tmp = f"/tmp/_mcp_{hashlib.md5(script.encode()).hexdigest()[:8]}.sh"
+            ssh_client.write_file(srv, tmp, f"#!/bin/bash\n{script}\n")
+            try:
+                result = ssh_client.execute(srv, f"bash {tmp}", use_sudo, timeout)
+                return [TextContent(type="text", text=_format_result(result, srv, "execute_script"))]
+            except TimeoutError:
+                return [TextContent(type="text", text=f"[{srv}] execute_script\nTIMEOUT after {timeout}s")]
+            finally:
+                ssh_client.execute(srv, f"rm -f {tmp}")
+
+        # Command mode with streaming
+        cmd = command
         if _use_streaming:
             try:
                 ctx = server.request_context
                 rid = ctx.request_id
                 log = ctx.session.send_log_message
                 output_lines, exit_code, stderr_data = [], 0, ""
-                async for line in ssh_client.execute_streaming(arguments["server"], cmd, use_sudo, timeout):
+                async for line in ssh_client.execute_streaming(srv, cmd, use_sudo, timeout):
                     if line.startswith("\0EXIT:"):
                         parts = line[6:].split(":", 1)
                         exit_code = int(parts[0])
@@ -181,8 +208,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     else:
                         output_lines.append(line)
                         await log(level="info", data=line, related_request_id=rid)
-                # Build final response with stdout + stderr + exit code
-                header = f"[{arguments['server']}] $ {cmd}\n"
+                header = f"[{srv}] $ {cmd}\n"
                 result_parts = []
                 stdout = "\n".join(output_lines)
                 if stdout.strip():
@@ -199,27 +225,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 pass  # Fall through to non-streaming
 
         try:
-            result = ssh_client.execute(arguments["server"], cmd, use_sudo, timeout)
-            return [TextContent(type="text", text=_format_result(result, arguments["server"], cmd))]
+            result = ssh_client.execute(srv, cmd, use_sudo, timeout)
+            return [TextContent(type="text", text=_format_result(result, srv, cmd))]
         except TimeoutError:
-            return [TextContent(type="text", text=f"[{arguments['server']}] $ {cmd}\nTIMEOUT after {timeout}s. Retry with higher timeout (max 300s).")]
-
-    elif name == "execute_script":
-        script = arguments["script"]
-        srv = arguments["server"]
-        use_sudo = arguments.get("use_sudo", False)
-        timeout = min(arguments.get("timeout", 60), 300)
-        # Write script to temp file, execute, clean up
-        import hashlib
-        tmp = f"/tmp/_mcp_{hashlib.md5(script.encode()).hexdigest()[:8]}.sh"
-        ssh_client.write_file(srv, tmp, f"#!/bin/bash\n{script}\n")
-        try:
-            result = ssh_client.execute(srv, f"bash {tmp}", use_sudo, timeout)
-            return [TextContent(type="text", text=_format_result(result, srv, "execute_script"))]
-        except TimeoutError:
-            return [TextContent(type="text", text=f"[{srv}] execute_script\nTIMEOUT after {timeout}s")]
-        finally:
-            ssh_client.execute(srv, f"rm -f {tmp}")
+            return [TextContent(type="text", text=f"[{srv}] $ {cmd}\nTIMEOUT after {timeout}s. Retry with higher timeout (max 300s).")]
 
     elif name == "read_file":
         srv = arguments["server"]
@@ -234,27 +243,54 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         ssh_client.write_file(arguments["server"], arguments["path"], arguments["content"])
         return [TextContent(type="text", text=f"[{arguments['server']}] Written: {arguments['path']}")]
 
-    elif name == "upload_file":
+    elif name == "transfer_file":
         srv = arguments["server"]
-        ssh_client.upload_file(srv, arguments["local_path"], arguments["remote_path"])
-        return [TextContent(type="text", text=f"[{srv}] Uploaded: {arguments['local_path']} → {arguments['remote_path']}")]
+        direction = arguments["direction"]
+        local_path = arguments["local_path"]
+        remote_path = arguments["remote_path"]
+        if direction == "upload":
+            ssh_client.upload_file(srv, local_path, remote_path)
+            return [TextContent(type="text", text=f"[{srv}] Uploaded: {local_path} → {remote_path}")]
+        else:
+            ssh_client.download_file(srv, remote_path, local_path)
+            return [TextContent(type="text", text=f"[{srv}] Downloaded: {remote_path} → {local_path}")]
 
-    elif name == "download_file":
+    elif name == "service":
         srv = arguments["server"]
-        ssh_client.download_file(srv, arguments["remote_path"], arguments["local_path"])
-        return [TextContent(type="text", text=f"[{srv}] Downloaded: {arguments['remote_path']} → {arguments['local_path']}")]
-
-    elif name == "get_service_status":
         svc = arguments["service"]
-        result = ssh_client.execute(arguments["server"], f"systemctl status {svc}")
-        return [TextContent(type="text", text=_format_result(result, arguments["server"], f"systemctl status {svc}"))]
+        action = arguments["action"]
+        use_sudo = action != "status"
+        result = ssh_client.execute(srv, f"systemctl {action} {svc}", use_sudo=use_sudo)
+        if action != "status" and result.exit_code == 0:
+            return [TextContent(type="text", text=f"[{srv}] {svc} → {action} OK")]
+        return [TextContent(type="text", text=_format_result(result, srv, f"systemctl {action} {svc}"))]
 
-    elif name == "manage_service":
-        svc, action = arguments["service"], arguments["action"]
-        result = ssh_client.execute(arguments["server"], f"systemctl {action} {svc}", use_sudo=True)
-        if result.exit_code == 0:
-            return [TextContent(type="text", text=f"[{arguments['server']}] {svc} → {action} OK")]
-        return [TextContent(type="text", text=_format_result(result, arguments["server"], f"systemctl {action} {svc}"))]
+    elif name == "search_in_file":
+        srv = arguments["server"]
+        path = arguments["path"]
+        pattern = arguments["pattern"]
+        ctx_lines = arguments.get("context_lines", 3)
+        max_matches = arguments.get("max_matches", 20)
+        result = ssh_client.search_in_file(srv, path, pattern, ctx_lines, max_matches)
+        return [TextContent(type="text", text=f"[{srv}] grep '{pattern}' {path}\n{result}")]
+
+    elif name == "replace_in_file":
+        srv = arguments["server"]
+        path = arguments["path"]
+        old_text = arguments["old_text"]
+        new_text = arguments["new_text"]
+        count = arguments.get("count", 1)
+        dry_run = arguments.get("dry_run", False)
+        result = ssh_client.replace_in_file(srv, path, old_text, new_text, count, dry_run)
+        action = "Preview" if dry_run else "Replaced"
+        return [TextContent(type="text", text=f"[{srv}] {action} in {path}\n{result}")]
+
+    elif name == "get_file_structure":
+        srv = arguments["server"]
+        path = arguments["path"]
+        language = arguments.get("language")
+        result = ssh_client.get_file_structure(srv, path, language)
+        return [TextContent(type="text", text=f"[{srv}] {path}\n{result}")]
 
     raise ValueError(f"Unknown tool: {name}")
 
