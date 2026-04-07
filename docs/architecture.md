@@ -3,7 +3,7 @@
 ## 1. Einführung und Ziele
 
 ### Aufgabenstellung
-Der SSH MCP Server ermöglicht KI-Assistenten (Kiro CLI, Claude Desktop) die Verwaltung von Remote-Servern über SSH. Er implementiert das [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) und stellt Tools für Kommandoausführung, Dateioperationen und Service-Management bereit.
+Der SSH MCP Server ermöglicht KI-Assistenten (Kiro CLI, Claude Desktop) die Verwaltung von Remote-Servern über SSH. Er implementiert das [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) und stellt 9 Tools für Kommandoausführung, Dateioperationen, Service-Management und effizientes Bearbeiten großer Dateien bereit.
 
 ### Qualitätsziele
 
@@ -75,6 +75,35 @@ graph LR
 - **paramiko für SSH**: Direkte SSH-Library statt Shell-Subprozesse (sicherer)
 - **Connection-Pooling**: Verbindungen werden 5 Minuten wiederverwendet
 - **Streaming**: Lange Befehle liefern Output zeilenweise an den Client
+- **Tool-Konsolidierung**: Minimale Anzahl Tools (9) um den LLM-Context klein zu halten
+- **Large-File-Strategie**: Chirurgische Edits statt Full-File-Rewrite für große Dateien
+
+### Tool-Übersicht
+
+| Tool | Zweck | Auto-Approve |
+|------|-------|:---:|
+| `list_servers` | Verfügbare Server auflisten | ✓ |
+| `execute` | Kommandos oder Scripts ausführen | ✗ |
+| `read_file` | Dateien (teilweise) lesen | ✓ |
+| `write_file` | Dateien komplett überschreiben | ✗ |
+| `transfer_file` | Upload/Download via SFTP | ✗ |
+| `service` | Systemd Services verwalten | ✗ |
+| `search_in_file` | Pattern-Suche mit Kontext | ✓ |
+| `replace_in_file` | Chirurgische Text-Ersetzung | ✗ |
+| `get_file_structure` | Funktions-/Klassen-Übersicht | ✓ |
+
+### Large-File-Workflow
+
+Für Dateien >200 Zeilen folgt der KI-Assistent diesem Pattern:
+
+```
+1. get_file_structure  → Überblick (Symbole + Zeilennummern)
+2. search_in_file      → Relevante Stelle finden
+3. read_file (lines+offset) → Nur den Abschnitt lesen
+4. replace_in_file     → Chirurgisch ändern
+```
+
+`write_file` wird nur für kleine Dateien oder Neuanlage verwendet.
 
 ---
 
@@ -116,6 +145,9 @@ classDiagram
         +write_file(server, path, content)
         +upload_file(server, local, remote)
         +download_file(server, remote, local)
+        +search_in_file(server, path, pattern, context_lines, max_matches) str
+        +replace_in_file(server, path, old_text, new_text, count, dry_run) str
+        +get_file_structure(server, path, language) str
         +close_all()
     }
 
@@ -153,7 +185,7 @@ sequenceDiagram
     participant S as Remote Server
 
     U->>AI: "Zeige Logs auf production"
-    AI->>MCP: call_tool("execute_command", {server, command})
+    AI->>MCP: call_tool("execute", {server, command})
     AI->>U: Approval Request
     U->>AI: Approve ✓
     MCP->>SSH: execute("production", "tail -100 /var/log/syslog")
@@ -205,7 +237,8 @@ graph TB
 ## 8. Querschnittliche Konzepte
 
 ### Sicherheit
-- **Approval-Workflow**: Schreibende Tools (`execute_command`, `write_file`, `manage_service`) erfordern User-Bestätigung durch den MCP Client
+- **Approval-Workflow**: Schreibende Tools (`execute`, `write_file`, `replace_in_file`, `service`, `transfer_file`) erfordern User-Bestätigung durch den MCP Client
+- **Auto-Approve nur für Lese-Tools**: `list_servers`, `read_file`, `search_in_file`, `get_file_structure`
 - **Credential-Management**: Server-Zugangsdaten in `.env`, nicht im Code
 - **Kein Shell-Subprocess**: paramiko nutzt direkte SSH-Kanäle
 
@@ -229,6 +262,9 @@ graph TB
 | stdio als Default-Transport | Einfachste Integration mit MCP Clients |
 | `.env` für Konfiguration | Standard-Pattern, kein eigener Config-Parser nötig |
 | Script-Execution via Temp-File | Mehrzeilige Scripts zuverlässig ausführen, Cleanup garantiert |
+| 9 konsolidierte Tools | Minimaler LLM-Context, keine redundanten Tools |
+| replace_in_file via Python-Helper | SFTP-basierter Helper-Script vermeidet Shell-Escaping bei Multi-Line-Content |
+| grep-basierte Dateistruktur | Keine Abhängigkeit auf Language Server, funktioniert auf jedem Server |
 
 ---
 
