@@ -1,7 +1,7 @@
 import os
 import datetime
 
-_log_path = os.path.join(os.path.expanduser("~"), ".ssh-mcp-audit.log")
+_log_path = os.getenv("SSH_MCP_AUDIT_LOG", os.path.join(os.path.expanduser("~"), ".ssh-mcp-audit.log"))
 
 
 def log(server: str, tool: str, detail: str, reason: str = "") -> None:
