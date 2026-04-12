@@ -4,12 +4,28 @@ from mcp.types import Tool, TextContent
 from .config import load_servers
 from .ssh_client import SSHClient
 from . import audit
+import atexit
 
-server = Server("ssh-mcp-server")
-servers = load_servers()
-ssh_client = SSHClient(servers)
+server = Server("remote-admin-mcp")
+servers = {}
+ssh_client = None
 
 _use_streaming = True
+
+
+def _validate(arguments: dict, *keys: str) -> str | None:
+    for k in keys:
+        if k in arguments and not str(arguments[k]).strip():
+            return f"ERROR: '{k}' must not be empty"
+    return None
+
+
+def _init():
+    global servers, ssh_client
+    if ssh_client is None:
+        servers = load_servers()
+        ssh_client = SSHClient(servers)
+        atexit.register(ssh_client.close_all)
 
 
 def _truncate_json_lines(text: str, max_json_len: int = 300) -> str:
@@ -171,6 +187,8 @@ async def list_tools() -> list[Tool]:
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    _init()
+
     if name == "list_servers":
         server_list = "\n".join(f"  {n}  {cfg.user}@{cfg.host}:{cfg.port}" for n, cfg in servers.items())
         return [TextContent(type="text", text=server_list)]
@@ -180,15 +198,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         command = arguments.get("command")
         script = arguments.get("script")
         use_sudo = arguments.get("use_sudo", False)
-        timeout = min(arguments.get("timeout", 30), 300)
+        timeout = max(1, min(arguments.get("timeout", 30), 300))
 
         if not command and not script:
             return [TextContent(type="text", text="ERROR: Provide either 'command' or 'script'")]
 
         # Script mode: write to temp file, execute, clean up
         if script:
-            import hashlib
-            tmp = f"/tmp/_mcp_{hashlib.md5(script.encode()).hexdigest()[:8]}.sh"
+            import uuid
+            tmp = f"/tmp/_mcp_{uuid.uuid4().hex[:8]}.sh"
             ssh_client.write_file(srv, tmp, f"#!/bin/bash\n{script}\n")
             try:
                 result = ssh_client.execute(srv, f"bash {tmp}", use_sudo, timeout)
@@ -229,8 +247,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 body = "\n".join(result_parts) if result_parts else "(no output)"
                 audit.log(srv, "execute", cmd, arguments.get("reason", ""))
                 return [TextContent(type="text", text=f"{header}{body}")]
-            except Exception:
-                pass  # Fall through to non-streaming
+            except Exception as e:
+                import sys
+                print(f"[ssh-mcp] Streaming failed, falling back to non-streaming: {e}", file=sys.stderr)
 
         try:
             result = ssh_client.execute(srv, cmd, use_sudo, timeout)
@@ -240,6 +259,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=f"[{srv}] $ {cmd}\nTIMEOUT after {timeout}s. Retry with higher timeout (max 300s).")]
 
     elif name == "read_file":
+        err = _validate(arguments, "server", "path")
+        if err: return [TextContent(type="text", text=err)]
         srv = arguments["server"]
         path = arguments["path"]
         lines = arguments.get("lines")
@@ -249,6 +270,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=f"[{srv}] {path}\n{content.rstrip()}")]
 
     elif name == "write_file":
+        err = _validate(arguments, "server", "path")
+        if err: return [TextContent(type="text", text=err)]
         ssh_client.write_file(arguments["server"], arguments["path"], arguments["content"])
         audit.log(arguments["server"], "write_file", arguments["path"], arguments.get("reason", ""))
         return [TextContent(type="text", text=f"[{arguments['server']}] Written: {arguments['path']}")]
@@ -267,17 +290,23 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=f"[{srv}] Downloaded: {remote_path} → {local_path}")]
 
     elif name == "service":
+        import re
         srv = arguments["server"]
         svc = arguments["service"]
         action = arguments["action"]
+        if not re.match(r'^[a-zA-Z0-9_.\-@]+$', svc):
+            return [TextContent(type="text", text=f"ERROR: Invalid service name: {svc}")]
         use_sudo = action != "status"
         result = ssh_client.execute(srv, f"systemctl {action} {svc}", use_sudo=use_sudo)
         if action != "status" and result.exit_code == 0:
             audit.log(srv, "service", f"{action} {svc}", arguments.get("reason", ""))
-            return [TextContent(type="text", text=f"[{srv}] {svc} → {action} OK")]
+            status = ssh_client.execute(srv, f"systemctl status {svc}", use_sudo=False)
+            return [TextContent(type="text", text=f"[{srv}] {svc} → {action} OK\n{status.stdout.rstrip()}")]
         return [TextContent(type="text", text=_format_result(result, srv, f"systemctl {action} {svc}"))]
 
     elif name == "search_in_file":
+        err = _validate(arguments, "server", "path", "pattern")
+        if err: return [TextContent(type="text", text=err)]
         srv = arguments["server"]
         path = arguments["path"]
         pattern = arguments["pattern"]
@@ -287,6 +316,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=f"[{srv}] grep '{pattern}' {path}\n{result}")]
 
     elif name == "replace_in_file":
+        err = _validate(arguments, "server", "path")
+        if err: return [TextContent(type="text", text=err)]
         srv = arguments["server"]
         path = arguments["path"]
         old_text = arguments["old_text"]
@@ -300,6 +331,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=f"[{srv}] {action} in {path}\n{result}")]
 
     elif name == "get_file_structure":
+        err = _validate(arguments, "server", "path")
+        if err: return [TextContent(type="text", text=err)]
         srv = arguments["server"]
         path = arguments["path"]
         language = arguments.get("language")
@@ -346,7 +379,7 @@ def main():
 
     parser = argparse.ArgumentParser(description="SSH MCP Server")
     parser.add_argument("--transport", choices=["stdio", "http"], default="stdio")
-    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args()
 

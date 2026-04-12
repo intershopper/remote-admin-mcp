@@ -7,7 +7,8 @@ class ServerConfig:
     host: str
     port: int
     user: str
-    password: str
+    password: str = ""
+    key_file: str = ""
 
 
 @dataclass

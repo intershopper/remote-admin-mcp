@@ -2,17 +2,61 @@
 
 MCP Server für SSH-basierte Server-Administration. Ermöglicht KI-Assistenten die Verwaltung von Remote-Servern via SSH.
 
+## Supported MCP Clients
+
+```mermaid
+graph LR
+    subgraph Getestet
+        K[Kiro CLI]
+        C[Claude Desktop]
+    end
+    subgraph Kompatibel
+        A[Alle MCP-fähigen Clients<br/>stdio + StreamableHTTP]
+    end
+    K --> MCP[SSH MCP Server]
+    C --> MCP
+    A --> MCP
+```
+
+| Client | Transport | Status |
+|--------|-----------|--------|
+| [Kiro CLI](https://github.com/aws/kiro) | stdio | ✅ getestet |
+| [Claude Desktop](https://claude.ai/download) | stdio | ✅ getestet |
+| Jeder MCP-Client | stdio / StreamableHTTP | ✅ kompatibel |
+
 ## Features
 
-- **Remote Command Execution**: Beliebige Befehle auf Remote-Servern ausführen
-- **File Operations**: Dateien lesen und schreiben
-- **Service Management**: Systemd Services verwalten (start/stop/restart)
-- **Multi-Server Support**: Mehrere Server gleichzeitig verwalten
-- **User Approval**: Alle kritischen Operationen erfordern Bestätigung
+Verwalte Linux-Server per SSH — direkt aus dem KI-Assistenten heraus. Keine Agents, Daemons oder Tools auf den Zielservern nötig. Nur ein SSH-Zugang reicht.
+
+```mermaid
+graph LR
+    AI[KI-Assistent] -->|MCP| S[SSH MCP Server]
+    S -->|SSH/SFTP| R1[Server 1]
+    S -->|SSH/SFTP| R2[Server 2]
+    S -->|SSH/SFTP| RN[Server N]
+```
+
+- **Agentless**: Kein Setup auf den Zielservern — funktioniert mit jedem SSH-Zugang
+- **Remote Command Execution**: Einzelbefehle oder mehrzeilige Scripts ausführen
+- **Sudo Support**: Befehle mit `sudo` ausführen, ohne interaktives Passwort
+- **File Operations**: Dateien lesen (teilweise/komplett), schreiben, suchen, chirurgisch editieren
+- **File Transfer**: Upload/Download via SFTP
+- **Service Management**: Systemd Services starten, stoppen, restarten, Status prüfen
+- **Code Navigation**: Funktions-/Klassen-Übersicht aus Quelldateien extrahieren (grep-basiert, kein Language Server nötig)
+- **Multi-Server**: Beliebig viele Server parallel verwalten
+- **Connection Pooling**: SSH-Verbindungen werden 5 Minuten wiederverwendet
+- **User Approval**: Schreibende Operationen erfordern Bestätigung durch den Operator
+- **Audit Log**: Alle Aktionen werden protokolliert (Pfad konfigurierbar)
 
 ## Installation
 
-### Mit uv (empfohlen)
+### Von PyPI
+
+```bash
+pip install remote-admin-mcp
+```
+
+### Mit uv (empfohlen für Entwicklung)
 
 ```bash
 # Virtuelle Umgebung erstellen und Abhängigkeiten installieren
@@ -99,16 +143,47 @@ Verwalte einen systemd Service (start/stop/restart/reload).
 
 ## Verwendung mit KI-Assistenten
 
-### Claude Desktop / Kiro CLI
+### Kiro CLI / Claude Desktop (uvx — empfohlen)
 
-Füge zu deiner MCP-Konfiguration hinzu:
+Kein manuelles Installieren nötig — `uvx` lädt und cached das Paket automatisch:
 
 ```json
 {
   "mcpServers": {
     "ssh": {
-      "command": "/path/to/ssh-server-mcp/.venv/bin/python",
-      "args": ["-m", "ssh_mcp.server"]
+      "command": "uvx",
+      "args": ["remote-admin-mcp"],
+      "env": {
+        "SSH_SERVER_1_NAME": "production",
+        "SSH_SERVER_1_HOST": "prod.example.com",
+        "SSH_SERVER_1_USER": "admin",
+        "SSH_SERVER_1_KEY_FILE": "~/.ssh/id_ed25519"
+      }
+    }
+  }
+}
+```
+
+### Alternative: Mit .env-Datei
+
+```json
+{
+  "mcpServers": {
+    "ssh": {
+      "command": "uvx",
+      "args": ["--env-file", "/path/to/.env", "remote-admin-mcp"]
+    }
+  }
+}
+```
+
+### Alternative: Lokale Installation
+
+```json
+{
+  "mcpServers": {
+    "ssh": {
+      "command": "/path/to/.venv/bin/ssh_mcp_server"
     }
   }
 }
@@ -133,11 +208,25 @@ Füge zu deiner MCP-Konfiguration hinzu:
 
 ## Sicherheit
 
-⚠️ **Wichtige Hinweise:**
-- Passwörter werden im Klartext in `.env` gespeichert
-- Alle Befehle erfordern User-Bestätigung
-- Sudo-Zugriff ist möglich
+- Schreibende Tools erfordern **User-Approval** durch den MCP Client
+- Lese-Tools (`list_servers`, `read_file`, `search_in_file`, `get_file_structure`) sind auto-approved
+- SSH-Key-Authentifizierung empfohlen (Passwort-Auth möglich)
 - `.env` sollte NICHT ins Git committed werden
+
+### Audit Log
+
+Alle Aktionen werden in ein Logfile geschrieben:
+
+```
+[2026-04-12 13:14:00] [production] execute: tail -100 /var/log/syslog
+[2026-04-12 13:14:05] [production] write_file: /etc/nginx/nginx.conf — Config update
+```
+
+Default: `~/.ssh-mcp-audit.log`. Konfigurierbar per Environment-Variable:
+
+```bash
+SSH_MCP_AUDIT_LOG=/var/log/ssh-mcp-audit.log
+```
 
 ## Entwicklung
 
@@ -151,4 +240,4 @@ ruff check src/
 
 ## Lizenz
 
-DB Inner Source License (DBISL) — siehe [LICENSE.adoc](LICENSE.adoc)
+MIT — siehe [LICENSE](LICENSE)

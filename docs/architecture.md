@@ -20,6 +20,22 @@ Der SSH MCP Server ermöglicht KI-Assistenten (Kiro CLI, Claude Desktop) die Ver
 | KI-Assistent | Zuverlässige Tool-Aufrufe mit strukturiertem Output |
 | Operator | Sichere Remote-Verwaltung mit Approval-Workflow |
 
+### Unterstützte MCP Clients
+
+```mermaid
+graph LR
+    K[Kiro CLI] -->|stdio| MCP[SSH MCP Server]
+    C[Claude Desktop] -->|stdio| MCP
+    X[Weitere MCP Clients] -->|stdio / StreamableHTTP| MCP
+    MCP -->|SSH/SFTP| S[Remote Server]
+```
+
+| Client | Transport | Status |
+|--------|-----------|--------|
+| Kiro CLI | stdio | ✅ getestet |
+| Claude Desktop | stdio | ✅ getestet |
+| Jeder MCP-Client | stdio / StreamableHTTP | ✅ kompatibel |
+
 ---
 
 ## 2. Randbedingungen
@@ -31,7 +47,7 @@ Der SSH MCP Server ermöglicht KI-Assistenten (Kiro CLI, Claude Desktop) die Ver
 - Transport: stdio (Standard) oder StreamableHTTP
 
 ### Organisatorisch
-- DB Inner Source License (DBISL)
+- MIT License
 - Keine Speicherung von Credentials im Code
 
 ---
@@ -207,7 +223,7 @@ sequenceDiagram
     participant Pool as Connection Pool
     participant S as Remote Server
 
-    MCP->>Pool: _get_connection("pi4")
+    MCP->>Pool: _get_connection("production")
     alt Verbindung im Pool & aktiv & < 5min
         Pool-->>MCP: Bestehende Verbindung
     else Keine/abgelaufene Verbindung
@@ -229,8 +245,8 @@ graph TB
     end
 
     subgraph Netzwerk
-        MCP -->|SSH:22| PI4[pi4<br/>Raspberry Pi 4]
-        MCP -->|SSH:22| OGPI[ogpi-lan<br/>Raspberry Pi 3]
+        MCP -->|SSH:22| PI4[production<br/>Server 1]
+        MCP -->|SSH:22| OGPI[staging<br/>Server 2]
         MCP -->|SSH:22| SRV[weitere Server...]
     end
 ```

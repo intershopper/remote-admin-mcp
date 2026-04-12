@@ -1,4 +1,6 @@
 import time
+import shlex
+import re
 import paramiko
 from typing import AsyncIterator
 from .models import ServerConfig, CommandResult
@@ -35,26 +37,28 @@ class SSHClient:
 
         cfg = self.servers[server_name]
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(
-            hostname=cfg.host, port=cfg.port,
-            username=cfg.user, password=cfg.password,
-            timeout=self.CONNECT_TIMEOUT,
-            banner_timeout=self.CONNECT_TIMEOUT,
+        client.load_system_host_keys()
+        client.set_missing_host_key_policy(paramiko.WarningPolicy())
+        connect_kwargs = dict(
+            hostname=cfg.host, port=cfg.port, username=cfg.user,
+            timeout=self.CONNECT_TIMEOUT, banner_timeout=self.CONNECT_TIMEOUT,
             auth_timeout=self.CONNECT_TIMEOUT,
         )
+        if cfg.key_file:
+            connect_kwargs["key_filename"] = cfg.key_file
+        if cfg.password:
+            connect_kwargs["password"] = cfg.password
+        client.connect(**connect_kwargs)
         self._pool[server_name] = (client, time.time())
         return client
 
     def _exec(self, server_name: str, command: str, use_sudo: bool, timeout: int):
         client = self._get_connection(server_name)
-        cmd = f"timeout {timeout} bash -c {repr(command)}"
+        cmd = f"timeout {timeout} bash -c {shlex.quote(command)}"
         if use_sudo:
-            cmd = f"sudo -S bash -c {repr(f'timeout {timeout} bash -c {repr(command)}')}"
+            cmd = f"sudo bash -c {shlex.quote(f'timeout {timeout} bash -c {shlex.quote(command)}')}"
         channel = client.get_transport().open_session()
         channel.exec_command(cmd)
-        if use_sudo:
-            channel.sendall((self.servers[server_name].password + "\n").encode())
         return client, channel
 
     def _drain(self, channel) -> tuple[str, str]:
@@ -117,13 +121,13 @@ class SSHClient:
 
     def read_file(self, server_name: str, path: str, lines: int | None = None, offset: int = 0, tail: bool = False) -> str:
         if lines and tail:
-            cmd = f"tail -n {lines} {repr(path)}"
+            cmd = f"tail -n {lines} {shlex.quote(path)}"
         elif lines:
             start = offset + 1
             end = offset + lines
-            cmd = f"sed -n '{start},{end}p' {repr(path)}"
+            cmd = f"sed -n '{start},{end}p' {shlex.quote(path)}"
         else:
-            cmd = f"cat {repr(path)}"
+            cmd = f"cat {shlex.quote(path)}"
         result = self.execute(server_name, cmd)
         if result.exit_code != 0:
             raise RuntimeError(f"Failed to read file: {result.stderr}")
@@ -149,7 +153,7 @@ class SSHClient:
         sftp.close()
 
     def search_in_file(self, server_name: str, path: str, pattern: str, context_lines: int = 3, max_matches: int = 20) -> str:
-        result = self.execute(server_name, f"test -f {repr(path)} && grep -n -C{context_lines} -m{max_matches} -- {repr(pattern)} {repr(path)}")
+        result = self.execute(server_name, f"test -f {shlex.quote(path)} && grep -n -C{context_lines} -m{max_matches} -- {shlex.quote(pattern)} {shlex.quote(path)}")
         if result.exit_code == 1:
             return "No matches found."
         if result.exit_code != 0:
@@ -157,23 +161,16 @@ class SSHClient:
         return result.stdout
 
     def replace_in_file(self, server_name: str, path: str, old_text: str, new_text: str, count: int = 1, dry_run: bool = False) -> str:
-        import hashlib, json
-        # Write a helper Python script to the remote server to avoid shell escaping issues
-        h = hashlib.md5(f"{path}{old_text}".encode()).hexdigest()[:8]
-        tmp_script = f"/tmp/_mcp_replace_{h}.py"
-        tmp_old = f"/tmp/_mcp_old_{h}.txt"
-        tmp_new = f"/tmp/_mcp_new_{h}.txt"
-        try:
-            self.write_file(server_name, tmp_old, old_text)
-            self.write_file(server_name, tmp_new, new_text)
-            self.write_file(server_name, tmp_script, f"""import sys, difflib
+        import base64
+        b64_old = base64.b64encode(old_text.encode()).decode()
+        b64_new = base64.b64encode(new_text.encode()).decode()
+        script = f"""import sys, base64, difflib
 path, count, dry_run = sys.argv[1], int(sys.argv[2]), sys.argv[3] == "1"
-old = open("{tmp_old}").read()
-new = open("{tmp_new}").read()
+old = base64.b64decode("{b64_old}").decode()
+new = base64.b64decode("{b64_new}").decode()
 content = open(path).read()
 if old not in content:
-    print("ERROR: old_text not found in file", file=sys.stderr)
-    sys.exit(1)
+    print("ERROR: old_text not found in file", file=sys.stderr); sys.exit(1)
 result = content.replace(old, new, count) if count > 0 else content.replace(old, new)
 n = content.count(old) if count == 0 else min(count, content.count(old))
 if dry_run:
@@ -182,18 +179,22 @@ if dry_run:
 else:
     open(path, "w").write(result)
     print(f"OK: {{n}} replacement(s) applied")
-""")
-            result = self.execute(server_name, f"python3 {tmp_script} {repr(path)} {count} {'1' if dry_run else '0'}")
+"""
+        import uuid
+        tmp = f"/tmp/_mcp_replace_{uuid.uuid4().hex[:8]}.py"
+        try:
+            self.write_file(server_name, tmp, script)
+            result = self.execute(server_name, f"python3 {tmp} {shlex.quote(path)} {count} {'1' if dry_run else '0'}")
             if result.exit_code != 0:
                 raise RuntimeError(result.stderr.strip())
             return result.stdout.strip()
         finally:
-            self.execute(server_name, f"rm -f {tmp_script} {tmp_old} {tmp_new}")
+            self.execute(server_name, f"rm -f {tmp}")
 
     def get_file_structure(self, server_name: str, path: str, language: str | None = None) -> str:
         if not language:
             ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
-            lang_map = {"js": "js", "ts": "js", "tsx": "js", "jsx": "js", "mjs": "js", "py": "py", "go": "go", "rs": "rs", "java": "java", "sh": "sh"}
+            lang_map = {"js": "js", "ts": "js", "tsx": "js", "jsx": "js", "mjs": "js", "py": "py", "go": "go", "rs": "rs", "java": "java", "sh": "sh", "bash": "sh", "zsh": "sh", "c": "c", "h": "c", "cpp": "c", "hpp": "c", "cc": "c", "rb": "rb", "php": "php"}
             language = lang_map.get(ext, "generic")
         patterns = {
             "js": r'^\s*(export\s+)?(async\s+)?function\s|^\s*(export\s+)?(const|let|var)\s+\w+\s*=\s*(async\s+)?\(|^\s*(export\s+)?class\s|^\s*(export\s+)?interface\s|^\s*(export\s+)?type\s|^\s*(export\s+)?enum\s',
@@ -202,10 +203,13 @@ else:
             "rs": r'^\s*(pub\s+)?(fn |struct |enum |impl |trait |mod )',
             "java": r'^\s*(public|private|protected)?\s*(static\s+)?(class |interface |enum |.*\s+\w+\s*\()',
             "sh": r'^\s*(\w+\s*\(\)|function\s+\w+)',
+            "c": r'^\s*(static\s+)?(inline\s+)?(void|int|char|float|double|long|unsigned|struct|enum|typedef|#define)\s|^\w+.*\w+\s*\(',
+            "rb": r'^\s*(class |module |def )',
+            "php": r'^\s*(public|private|protected|static)?\s*(function |class |interface |trait )',
             "generic": r'^\s*(function|class|def|async def|interface|type|struct|impl|pub fn|fn|enum|trait|mod)\s',
         }
         pat = patterns.get(language, patterns["generic"])
-        result = self.execute(server_name, f"wc -l < {repr(path)} && grep -n -E {repr(pat)} {repr(path)}")
+        result = self.execute(server_name, f"wc -l < {shlex.quote(path)} && grep -n -E {shlex.quote(pat)} {shlex.quote(path)}")
         if result.exit_code != 0:
             raise RuntimeError(f"Failed: {result.stderr}")
         lines = result.stdout.strip().split("\n")
