@@ -1,6 +1,5 @@
 import time
 import shlex
-import re
 import paramiko
 from typing import AsyncIterator
 from .models import ServerConfig, CommandResult
@@ -61,29 +60,35 @@ class SSHClient:
         channel.exec_command(cmd)
         return client, channel
 
-    def _drain(self, channel) -> tuple[str, str]:
-        out, err = [], []
-        while channel.recv_ready():
-            out.append(channel.recv(4096))
-        while channel.recv_stderr_ready():
-            err.append(channel.recv_stderr(4096))
-        return b"".join(out).decode(), b"".join(err).decode()
-
     def execute(self, server_name: str, command: str, use_sudo: bool = False, timeout: int = 30) -> CommandResult:
         client, channel = self._exec(server_name, command, use_sudo, timeout)
+        # Hard wall-clock cap so a hung channel can never block forever
+        # (the remote `timeout` wrapper handles the normal case → exit 124).
+        channel.settimeout(timeout + 15)
         try:
             out, err = [], []
+            # Read until EOF. channel.recv returns b"" when the remote side
+            # closed the stream, which only happens after the command exited,
+            # so no output can be lost.
             while True:
+                got = False
                 if channel.recv_ready():
-                    out.append(channel.recv(4096))
+                    data = channel.recv(65536)
+                    if data:
+                        out.append(data)
+                        got = True
                 if channel.recv_stderr_ready():
-                    err.append(channel.recv_stderr(4096))
-                if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
-                    break
-            extra_out, extra_err = self._drain(channel)
+                    data = channel.recv_stderr(65536)
+                    if data:
+                        err.append(data)
+                        got = True
+                if not got:
+                    if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
+                        break
+                    time.sleep(0.02)  # avoid busy-wait burning CPU
             exit_code = channel.recv_exit_status()
-            stdout_data = b"".join(out).decode() + extra_out
-            stderr_data = b"".join(err).decode() + extra_err
+            stdout_data = b"".join(out).decode(errors="replace")
+            stderr_data = b"".join(err).decode(errors="replace")
             if exit_code == 124:
                 raise TimeoutError(f"Command timed out after {timeout}s")
             return CommandResult(stdout=stdout_data, stderr=stderr_data, exit_code=exit_code)
@@ -92,30 +97,41 @@ class SSHClient:
 
     async def execute_streaming(self, server_name: str, command: str, use_sudo: bool = False, timeout: int = 30) -> AsyncIterator[str]:
         import asyncio
+        loop = asyncio.get_event_loop()
         client, channel = self._exec(server_name, command, use_sudo, timeout)
+        channel.settimeout(timeout + 15)
         try:
             buf, err_chunks = "", []
             while True:
+                got = False
                 if channel.recv_stderr_ready():
-                    err_chunks.append(channel.recv_stderr(4096))
+                    err_chunks.append(channel.recv_stderr(65536))
+                    got = True
                 if channel.recv_ready():
-                    chunk = await asyncio.get_event_loop().run_in_executor(None, channel.recv, 4096)
-                    buf += chunk.decode()
-                    while "\n" in buf:
-                        line, buf = buf.split("\n", 1)
-                        yield line
-                elif channel.exit_status_ready():
-                    break
-                else:
-                    await asyncio.sleep(0.05)
+                    chunk = await loop.run_in_executor(None, channel.recv, 65536)
+                    if chunk:
+                        buf += chunk.decode(errors="replace")
+                        while "\n" in buf:
+                            line, buf = buf.split("\n", 1)
+                            yield line
+                        got = True
+                if not got:
+                    if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
+                        break
+                    await asyncio.sleep(0.03)
+            # flush any remaining buffered stdout/stderr
             while channel.recv_ready():
-                buf += channel.recv(4096).decode()
+                buf += channel.recv(65536).decode(errors="replace")
             while channel.recv_stderr_ready():
-                err_chunks.append(channel.recv_stderr(4096))
+                err_chunks.append(channel.recv_stderr(65536))
             if buf.strip():
-                yield buf.strip()
+                yield buf.rstrip("\n")
             exit_code = channel.recv_exit_status()
-            yield f"\0EXIT:{exit_code}:{b''.join(err_chunks).decode()}"
+            stderr_data = b"".join(err_chunks).decode(errors="replace")
+            # Separator uses a NUL-delimited, length-safe encoding so stderr
+            # containing ':' or newlines can never corrupt the exit marker.
+            import base64
+            yield "\0EXIT\0" + str(exit_code) + "\0" + base64.b64encode(stderr_data.encode()).decode()
         finally:
             channel.close()
 

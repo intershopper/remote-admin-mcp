@@ -226,10 +226,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 log = ctx.session.send_log_message
                 output_lines, exit_code, stderr_data = [], 0, ""
                 async for line in ssh_client.execute_streaming(srv, cmd, use_sudo, timeout):
-                    if line.startswith("\0EXIT:"):
-                        parts = line[6:].split(":", 1)
-                        exit_code = int(parts[0])
-                        stderr_data = parts[1] if len(parts) > 1 else ""
+                    if line.startswith("\0EXIT\0"):
+                        import base64
+                        # Marker format: \0EXIT\0<code>\0<base64-stderr>
+                        code, b64err = line[len("\0EXIT\0"):].split("\0", 1)
+                        exit_code = int(code)
+                        stderr_data = base64.b64decode(b64err).decode(errors="replace") if b64err else ""
                     else:
                         output_lines.append(line)
                         await log(level="info", data=line, related_request_id=rid)
