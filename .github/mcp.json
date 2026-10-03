@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "ssh": {
+      "command": "/Users/frankschaellert/IdeaProjects/private/ssh-server-mcp/.venv/bin/python",
+      "args": [
+        "-m",
+        "ssh_mcp.server"
+      ],
+      "autoApprove": [
+        "list_servers",
+        "read_file",
+        "search_in_file",
+        "get_file_structure"
+      ]
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"]
+    }
+  }
+}

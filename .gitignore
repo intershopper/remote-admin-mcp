@@ -10,3 +10,9 @@ build/
 .ruff_cache/
 .kiro/
 .vibe/
+
+# Playwright-Artefakte (Logs/Snapshots mit internen Smart-Home-Daten)
+.playwright-mcp/
+
+# Screenshots (interne Daten: NSPanel, Pihole, Node-RED)
+*.png
