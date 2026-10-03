@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "remote-admin-mcp"
-version = "0.2.0"
+version = "0.2.1"
 description = "MCP Server for remote server administration via SSH — execute commands, manage files, edit configs, transfer files, control services. No agents needed on target servers."
 readme = "README.md"
 license = "MIT"
@@ -16,7 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
 ]
 dependencies = [
-    "mcp>=1.26.0",
+    "mcp>=1.26.0,<2.0",
     "paramiko>=3.4.0",
     "python-dotenv>=1.0.0",
     "uvicorn>=0.30.0",
